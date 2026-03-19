@@ -22,6 +22,7 @@ from app.services.settings import (
     DEFAULT_WARRANTY_EXPIRATION_MODE,
     DEFAULT_UI_THEME,
 )
+from app.services.cliproxyapi import cliproxyapi_service
 from app.models import RedemptionCode, Team
 from app.utils.time_utils import get_now
 
@@ -891,7 +892,101 @@ async def enable_team_device_auth(
         )
 
 
+@router.post("/teams/{team_id}/push-cliproxyapi")
+async def push_team_to_cliproxyapi(
+    team_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(require_admin)
+):
+    """将单个 Team 的 Codex 认证文件推送到 CliproxyAPI。"""
+    try:
+        logger.info("管理员推送 Team %s 到 CliproxyAPI", team_id)
+        result = await cliproxyapi_service.push_team_auth_file(team_id, db)
+        if not result.get("success"):
+            return JSONResponse(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                content=result
+            )
+        return JSONResponse(content=result)
+    except Exception as e:
+        logger.error("推送 Team %s 到 CliproxyAPI 失败: %s", team_id, e)
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"success": False, "error": str(e)}
+        )
+
+
 # ==================== 批量操作路由 ====================
+
+@router.post("/teams/batch-push-cliproxyapi")
+async def batch_push_teams_to_cliproxyapi(
+    action_data: BulkActionRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(require_admin)
+):
+    """批量推送 Team 的 Codex 认证文件到 CliproxyAPI。"""
+    try:
+        logger.info("管理员批量推送 %s 个 Team 到 CliproxyAPI", len(action_data.ids))
+
+        uploaded_count = 0
+        updated_count = 0
+        skipped_count = 0
+        failed_count = 0
+        results = []
+
+        for team_id in action_data.ids:
+            result = await cliproxyapi_service.push_team_auth_file(team_id, db)
+            action = result.get("action")
+
+            if result.get("success"):
+                if action == "uploaded":
+                    uploaded_count += 1
+                elif action == "updated":
+                    updated_count += 1
+                elif action == "skipped":
+                    skipped_count += 1
+
+                results.append(
+                    {
+                        "team_id": team_id,
+                        "email": result.get("email"),
+                        "filename": result.get("filename"),
+                        "action": action,
+                        "error": None,
+                    }
+                )
+                continue
+
+            failed_count += 1
+            results.append(
+                {
+                    "team_id": team_id,
+                    "email": result.get("email"),
+                    "filename": result.get("filename"),
+                    "action": None,
+                    "error": result.get("error"),
+                }
+            )
+
+        return JSONResponse(content={
+            "success": True,
+            "message": (
+                "批量推送完成: "
+                f"新增 {uploaded_count}, 更新 {updated_count}, 跳过 {skipped_count}, 失败 {failed_count}"
+            ),
+            "uploaded_count": uploaded_count,
+            "updated_count": updated_count,
+            "skipped_count": skipped_count,
+            "failed_count": failed_count,
+            "results": results,
+        })
+    except Exception as e:
+        logger.error("批量推送 Team 到 CliproxyAPI 失败: %s", e)
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"success": False, "error": str(e)}
+        )
+
 
 @router.post("/teams/batch-refresh")
 async def batch_refresh_teams(
@@ -1655,6 +1750,8 @@ async def settings_page(
                 "periodic_team_sync_interval_hours": await settings_service.get_setting(db, "periodic_team_sync_interval_hours", "12"),
                 "periodic_team_sync_days": await settings_service.get_setting(db, "periodic_team_sync_days", "7"),
                 "default_team_max_members": await settings_service.get_setting(db, "default_team_max_members", "6"),
+                "cliproxyapi_base_url": await settings_service.get_setting(db, "cliproxyapi_base_url", ""),
+                "cliproxyapi_api_key": await settings_service.get_setting(db, "cliproxyapi_api_key", ""),
                 "warranty_expiration_mode": await settings_service.get_warranty_expiration_mode(db),
                 "ui_theme": settings_service.normalize_ui_theme(await settings_service.get_setting(db, "ui_theme", DEFAULT_UI_THEME)),
             }
@@ -1696,6 +1793,12 @@ class TokenRefreshSettingsRequest(BaseModel):
 class TeamImportSettingsRequest(BaseModel):
     """Team 导入设置请求"""
     default_team_max_members: int = Field(6, ge=1, le=100, description="新导入 Team 的默认总席位")
+
+
+class CliproxyapiSettingsRequest(BaseModel):
+    """CliproxyAPI 推送配置请求"""
+    base_url: str = Field("", description="CliproxyAPI 站点地址")
+    api_key: str = Field("", description="CliproxyAPI 管理密钥")
 
 
 class TeamAutoRefreshSettingsRequest(BaseModel):
@@ -2152,6 +2255,65 @@ async def update_team_import_settings(
 
     except Exception as e:
         logger.error(f"更新 Team 导入设置失败: {e}")
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"success": False, "error": f"更新失败: {str(e)}"}
+        )
+
+
+@router.post("/settings/cliproxyapi")
+async def update_cliproxyapi_settings(
+    cliproxyapi_data: CliproxyapiSettingsRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(require_admin)
+):
+    """更新 CliproxyAPI 推送配置。"""
+    try:
+        base_url = cliproxyapi_service.normalize_base_url(cliproxyapi_data.base_url)
+        api_key = cliproxyapi_data.api_key.strip()
+
+        if not base_url:
+            return JSONResponse(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                content={"success": False, "error": "CliproxyAPI 地址不能为空"}
+            )
+
+        if not api_key:
+            return JSONResponse(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                content={"success": False, "error": "CliproxyAPI 管理密钥不能为空"}
+            )
+
+        if not cliproxyapi_service.is_valid_base_url(base_url):
+            return JSONResponse(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                content={"success": False, "error": "CliproxyAPI 地址格式错误，仅支持 http/https"}
+            )
+
+        success = await settings_service.update_settings(
+            db,
+            {
+                "cliproxyapi_base_url": base_url,
+                "cliproxyapi_api_key": api_key,
+            }
+        )
+
+        if success:
+            return JSONResponse(
+                content={
+                    "success": True,
+                    "message": "CliproxyAPI 配置已保存",
+                    "base_url": base_url,
+                }
+            )
+
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"success": False, "error": "保存失败"}
+        )
+
+    except Exception as e:
+        logger.error("更新 CliproxyAPI 配置失败: %s", e)
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             content={"success": False, "error": f"更新失败: {str(e)}"}

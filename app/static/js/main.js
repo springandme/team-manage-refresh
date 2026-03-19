@@ -111,24 +111,58 @@ async function initThemeSwitcher() {
 
 
 // Toast 提示函数
-function showToast(message, type = 'info') {
+function showToast(message, type = 'info', options = {}) {
     const toast = document.getElementById('toast');
     if (!toast) return;
 
-    let icon = 'info';
-    if (type === 'success') icon = 'check-circle';
-    if (type === 'error') icon = 'alert-circle';
+    const iconMap = {
+        success: 'check-circle',
+        error: 'alert-circle',
+        warning: 'alert-triangle',
+        info: 'info'
+    };
+    const titleMap = {
+        success: '操作成功',
+        error: '操作失败',
+        warning: '请注意',
+        info: '提示'
+    };
+    const durationMap = {
+        success: 4200,
+        error: 5200,
+        warning: 4200,
+        info: 3000
+    };
 
-    toast.innerHTML = `<i data-lucide="${icon}"></i><span>${message}</span>`;
-    toast.className = `toast ${type} show`;
+    const toastType = ['success', 'error', 'warning', 'info'].includes(type) ? type : 'info';
+    const icon = iconMap[toastType];
+    const title = String(options.title || titleMap[toastType] || '');
+    const detail = String(message || '');
+    const duration = Number.isFinite(options.duration) ? Number(options.duration) : (durationMap[toastType] || 3000);
+
+    if (window.__toastTimer) {
+        window.clearTimeout(window.__toastTimer);
+        window.__toastTimer = null;
+    }
+
+    toast.innerHTML = `
+        <div class="toast-icon-wrap">
+            <i data-lucide="${icon}"></i>
+        </div>
+        <div class="toast-content">
+            <div class="toast-title">${title}</div>
+            <div class="toast-message">${detail}</div>
+        </div>
+    `;
+    toast.className = `toast ${toastType} show`;
 
     if (window.lucide) {
         lucide.createIcons();
     }
 
-    setTimeout(() => {
+    window.__toastTimer = window.setTimeout(() => {
         toast.classList.remove('show');
-    }, 3000);
+    }, Math.max(duration, 1200));
 }
 
 // 日期格式化函数
