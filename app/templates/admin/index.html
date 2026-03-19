@@ -76,6 +76,9 @@
                 <button type="button" id="btnBatchEnableDeviceAuth" class="btn btn-success btn-sm">
                     <i data-lucide="shield-check" style="width: 14px; height: 14px;"></i> 批量开启验证
                 </button>
+                <button type="button" id="btnBatchPushCliproxyapi" class="btn btn-primary btn-sm">
+                    <i data-lucide="send" style="width: 14px; height: 14px;"></i> 批量推送
+                </button>
                 <button type="button" id="btnBatchDelete" class="btn btn-danger btn-sm">
                     <i data-lucide="trash-2" style="width: 14px; height: 14px;"></i> 批量删除
                 </button>
@@ -245,6 +248,10 @@
                         <button class="btn btn-sm btn-icon btn-minimal btn-success btn-enable-device-auth"
                             data-id="{{ team.id }}" title="一键开启设备代码验证">
                             <i data-lucide="shield-check" style="width: 16px; height: 16px;"></i>
+                        </button>
+                        <button class="btn btn-sm btn-icon btn-minimal btn-primary btn-push-cliproxyapi"
+                            data-id="{{ team.id }}" data-email="{{ team.email }}" title="推送到 CliproxyAPI">
+                            <i data-lucide="send" style="width: 16px; height: 16px;"></i>
                         </button>
                         <button type="button" class="btn btn-sm btn-icon btn-minimal btn-danger btn-delete-team"
                             data-id="{{ team.id }}" data-email="{{ team.email }}" title="删除"
@@ -490,6 +497,14 @@
             });
         });
 
+        document.querySelectorAll('.btn-push-cliproxyapi').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const id = btn.getAttribute('data-id');
+                const email = btn.getAttribute('data-email');
+                pushTeamToCliproxyapi(id, email);
+            });
+        });
+
         // 绑定复选框事件（避免仅依赖内联 onchange）
         document.getElementById('selectAll')?.addEventListener('change', (e) => {
             toggleSelectAll(Boolean(e.target && e.target.checked));
@@ -501,6 +516,7 @@
         // 绑定批量操作按钮（避免依赖内联 onclick，兼容更严格的 CSP）
         document.getElementById('btnBatchRefresh')?.addEventListener('click', handleBatchRefresh);
         document.getElementById('btnBatchEnableDeviceAuth')?.addEventListener('click', handleBatchEnableDeviceAuth);
+        document.getElementById('btnBatchPushCliproxyapi')?.addEventListener('click', handleBatchPushCliproxyapi);
         document.getElementById('btnBatchDelete')?.addEventListener('click', handleBatchDelete);
     });
 
@@ -522,6 +538,40 @@
                 setTimeout(() => location.reload(), 1000);
             } else {
                 showToast(data.error || '开启失败', 'error');
+            }
+        } catch (error) {
+            showToast('网络错误', 'error');
+        }
+    }
+
+    async function pushTeamToCliproxyapi(teamId, email = '') {
+        const targetLabel = email ? `"${email}"` : `ID=${teamId}`;
+        if (!confirm(`确定要将 Team ${targetLabel} 推送到 CliproxyAPI 吗?`)) {
+            return;
+        }
+
+        try {
+            showToast('正在推送到 CliproxyAPI...', 'info');
+            const response = await fetch(`/admin/teams/${teamId}/push-cliproxyapi`, {
+                method: 'POST'
+            });
+
+            const data = await response.json();
+
+            if (response.ok && data.success) {
+                if (data.action === 'skipped') {
+                    showToast(data.message || '远端认证文件已是最新', 'info', {
+                        title: '无需重复推送',
+                        duration: 5600
+                    });
+                } else {
+                    showToast(data.message || '推送成功', 'success', {
+                        title: data.action === 'updated' ? '推送已更新' : '推送成功',
+                        duration: 7200
+                    });
+                }
+            } else {
+                showToast(data.error || '推送失败', 'error');
             }
         } catch (error) {
             showToast('网络错误', 'error');
@@ -940,7 +990,7 @@
         }
     }
 
-    async function handleBatchAction(endpoint, actionName) {
+    async function handleBatchAction(endpoint, actionName, options = {}) {
         const selectedIds = Array.from(document.querySelectorAll('.team-checkbox:checked'))
             .map(cb => parseInt(cb.value));
 
@@ -966,7 +1016,10 @@
             const result = await response.json();
 
             if (response.ok && result.success) {
-                showToast(result.message || `${actionName}成功`, 'success');
+                showToast(result.message || `${actionName}成功`, options.successType || 'success', {
+                    title: options.successTitle || `${actionName}成功`,
+                    duration: options.successDuration
+                });
                 setTimeout(() => location.reload(), 1500);
             } else {
                 showToast(result.error || `${actionName}失败`, 'error');
@@ -987,6 +1040,13 @@
 
     function handleBatchEnableDeviceAuth() {
         handleBatchAction('/admin/teams/batch-enable-device-auth', '批量开启验证');
+    }
+
+    function handleBatchPushCliproxyapi() {
+        handleBatchAction('/admin/teams/batch-push-cliproxyapi', '批量推送到 CliproxyAPI', {
+            successTitle: '批量推送完成',
+            successDuration: 7600
+        });
     }
 
     function changePerPage(val) {
